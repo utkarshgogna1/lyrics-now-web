@@ -47,7 +47,7 @@
 import { processAudioFile } from './vendor/chromaprint-index.js';
 
 const PROXY_BASE = 'https://lyrics-now-proxy.utkarshgogna.workers.dev';
-const CLIP_MS = 14000;
+const CLIP_MS = 22000;
 
 const toggleBtn = document.getElementById('toggle');
 const statusEl = document.getElementById('status');
@@ -99,13 +99,17 @@ async function recognize(blob) {
   if (data.status !== 'ok') {
     throw new Error('recognition request failed');
   }
-  const best = (data.results || [])
+  const results = data.results || [];
+  const best = results
     .filter(r => r.recordings && r.recordings.length)
     .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
-  if (!best) return null;
+  if (!best) {
+    const topScore = results.length ? Math.round((results[0].score || 0) * 100) : null;
+    return { title: null, topScore };
+  }
   const rec = best.recordings[0];
   const artist = (rec.artists || []).map(a => a.name).join(', ') || 'Unknown';
-  return { title: rec.title, artist };
+  return { title: rec.title, artist, score: Math.round((best.score || 0) * 100) };
 }
 
 function geniusHitScore(hit) {
@@ -173,6 +177,8 @@ async function listenLoop() {
       } else {
         setStatus('Still: ' + result.title + ' — still listening...');
       }
+    } else if (result && result.topScore !== null && result.topScore !== undefined) {
+      setStatus(`No confident match (closest guess ${result.topScore}%), still listening...`);
     } else {
       setStatus('No match yet, still listening...');
     }
