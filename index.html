@@ -92,13 +92,25 @@ async function recognize(blob) {
   return data.result;
 }
 
+function geniusHitScore(hit) {
+  const t = (hit.title_with_featured || hit.title || '').toLowerCase();
+  const artistNames = (hit.artist_names || '').toLowerCase();
+  if (t.includes('romaniz') || artistNames.includes('romaniz')) return 0;
+  if (t.includes('english translation') || artistNames.includes('english translations')) return 1;
+  return 2;
+}
+
 async function geniusLookup(title, artist) {
   const q = encodeURIComponent(`${title} ${artist}`);
   const res = await fetch(`${PROXY_BASE}/genius?q=${q}`);
   if (!res.ok) throw new Error('lyrics lookup failed');
   const data = await res.json();
-  const hits = (data.response && data.response.hits) || [];
-  return hits.length ? hits[0].result.url : null;
+  const hits = ((data.response && data.response.hits) || [])
+    .filter(h => h.type === 'song')
+    .map(h => h.result);
+  if (!hits.length) return null;
+  const best = hits.slice().sort((a, b) => geniusHitScore(a) - geniusHitScore(b))[0];
+  return best.url;
 }
 
 function geniusSearchUrl(title, artist) {
@@ -159,6 +171,7 @@ async function startListening() {
     return;
   }
   running = true;
+  lastSongKey = null;
   toggleBtn.innerHTML = 'Stop';
   toggleBtn.classList.add('listening');
   listenLoop();
