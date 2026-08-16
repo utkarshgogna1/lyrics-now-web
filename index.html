@@ -43,9 +43,11 @@
   <div id="lastSong"></div>
 </div>
 
-<script>
+<script type="module">
+import { processAudioFile } from './vendor/chromaprint-index.js';
+
 const PROXY_BASE = 'https://lyrics-now-proxy.utkarshgogna.workers.dev';
-const CLIP_MS = 7000;
+const CLIP_MS = 14000;
 
 const toggleBtn = document.getElementById('toggle');
 const statusEl = document.getElementById('status');
@@ -80,16 +82,30 @@ function recordClip(mediaStream, durationMs, mimeType) {
   });
 }
 
+async function fingerprintClip(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+  const gen = processAudioFile(arrayBuffer);
+  const { value } = await gen.next();
+  if (!value) throw new Error('could not fingerprint audio');
+  return value; // { fingerprint, duration }
+}
+
 async function recognize(blob) {
-  const ext = blob.type.includes('mp4') ? 'mp4' : blob.type.includes('ogg') ? 'ogg' : 'webm';
-  const form = new FormData();
-  form.append('file', blob, `clip.${ext}`);
-  const res = await fetch(`${PROXY_BASE}/audd`, { method: 'POST', body: form });
+  const { fingerprint, duration } = await fingerprintClip(blob);
+  const res = await fetch(
+    `${PROXY_BASE}/acoustid?fingerprint=${encodeURIComponent(fingerprint)}&duration=${Math.round(duration)}`
+  );
   const data = await res.json();
-  if (data.status !== 'success') {
-    throw new Error((data.error && data.error.error_message) || 'recognition request failed');
+  if (data.status !== 'ok') {
+    throw new Error('recognition request failed');
   }
-  return data.result;
+  const best = (data.results || [])
+    .filter(r => r.recordings && r.recordings.length)
+    .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+  if (!best) return null;
+  const rec = best.recordings[0];
+  const artist = (rec.artists || []).map(a => a.name).join(', ') || 'Unknown';
+  return { title: rec.title, artist };
 }
 
 function geniusHitScore(hit) {
