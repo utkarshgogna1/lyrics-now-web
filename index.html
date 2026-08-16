@@ -67,7 +67,7 @@ const progressFillEl = document.getElementById('progressFill');
 let running = false;
 let stream = null;
 let lastSongKey = null;
-let processAudioFile = null;
+let DecodedSignature = null;
 
 function setStatus(text) { statusEl.textContent = text; }
 
@@ -96,32 +96,28 @@ function recordClip(mediaStream, durationMs, mimeType) {
 
 async function fingerprintClip(blob) {
   const arrayBuffer = await blob.arrayBuffer();
-  const gen = processAudioFile(arrayBuffer);
-  const { value } = await gen.next();
-  if (!value) throw new Error('could not fingerprint audio');
-  return value; // { fingerprint, duration }
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+  const channelData = audioBuffer.getChannelData(0);
+  const sig = DecodedSignature.new(channelData, audioBuffer.sampleRate, 1);
+  try {
+    return { uri: sig.uri, samplems: sig.samplems };
+  } finally {
+    sig.free();
+  }
 }
 
 async function recognize(blob) {
-  const { fingerprint, duration } = await fingerprintClip(blob);
-  const res = await fetch(
-    `${PROXY_BASE}/acoustid?fingerprint=${encodeURIComponent(fingerprint)}&duration=${Math.round(duration)}`
-  );
+  const { uri, samplems } = await fingerprintClip(blob);
+  const res = await fetch(`${PROXY_BASE}/shazam`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uri, samplems }),
+  });
   const data = await res.json();
-  if (data.status !== 'ok') {
-    throw new Error('recognition request failed');
-  }
-  const results = data.results || [];
-  const best = results
-    .filter(r => r.recordings && r.recordings.length)
-    .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
-  if (!best) {
-    const topScore = results.length ? Math.round((results[0].score || 0) * 100) : null;
-    return { title: null, topScore };
-  }
-  const rec = best.recordings[0];
-  const artist = (rec.artists || []).map(a => a.name).join(', ') || 'Unknown';
-  return { title: rec.title, artist, score: Math.round((best.score || 0) * 100) };
+  const track = data.track;
+  if (!track || !track.title) return { title: null };
+  return { title: track.title, artist: track.subtitle || 'Unknown' };
 }
 
 function geniusHitScore(hit) {
@@ -204,8 +200,6 @@ async function listenLoop() {
       } else {
         setStatus('Still: ' + result.title + ' — still listening...');
       }
-    } else if (result && result.topScore !== null && result.topScore !== undefined) {
-      setStatus(`No confident match (closest guess ${result.topScore}%), still listening...`);
     } else {
       setStatus('No match yet, still listening...');
     }
@@ -234,14 +228,15 @@ function stopListening() {
 }
 
 toggleBtn.addEventListener('click', () => {
-  if (!processAudioFile) return;
+  if (!DecodedSignature) return;
   if (running) stopListening(); else startListening();
 });
 
 (async () => {
   try {
-    const mod = await import('./vendor/chromaprint-index.js');
-    processAudioFile = mod.processAudioFile;
+    const mod = await import('./vendor/shazamio-core.js');
+    await mod.default();
+    DecodedSignature = mod.DecodedSignature;
     toggleBtn.disabled = false;
     toggleBtn.innerHTML = 'Start<br>Listening';
     setStatus('Tap the button, then hold your phone/laptop mic toward the music.');
