@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lyrics Now</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0b0b12; color: #f2f2f7; padding: 24px;
+  }
+  .card { width: 100%; max-width: 420px; text-align: center; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  p.sub { color: #9a9aa8; margin: 0 0 28px; font-size: 0.92rem; }
+  button#toggle {
+    width: 160px; height: 160px; border-radius: 50%; border: none; cursor: pointer;
+    font-size: 1rem; font-weight: 600; color: white;
+    background: radial-gradient(circle at 30% 30%, #7c5cff, #4b2fd8);
+    box-shadow: 0 0 0 0 rgba(124,92,255,0.6); transition: transform .15s ease;
+  }
+  button#toggle:active { transform: scale(0.96); }
+  button#toggle.listening { animation: pulse 1.6s infinite; background: radial-gradient(circle at 30% 30%, #ff5c8a, #d81b60); }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(216,27,96,0.55); }
+    70% { box-shadow: 0 0 0 22px rgba(216,27,96,0); }
+    100% { box-shadow: 0 0 0 0 rgba(216,27,96,0); }
+  }
+  #status { margin-top: 22px; min-height: 44px; font-size: 0.98rem; color: #d6d6e0; white-space: pre-line; }
+  #lastSong { margin-top: 6px; font-size: 0.88rem; color: #9a9aa8; }
+  details { margin-top: 32px; text-align: left; }
+  summary { cursor: pointer; color: #9a9aa8; font-size: 0.85rem; }
+  .settings { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .settings label { font-size: 0.8rem; color: #9a9aa8; }
+  .settings input {
+    width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #2c2c38;
+    background: #16161f; color: #f2f2f7; font-size: 0.9rem;
+  }
+  .settings button {
+    padding: 10px; border-radius: 8px; border: none; background: #2c2c38; color: #f2f2f7;
+    cursor: pointer; font-size: 0.85rem;
+  }
+  .hint { font-size: 0.75rem; color: #6a6a78; margin-top: 4px; }
+  a.link { color: #a78bfa; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Lyrics Now</h1>
+  <p class="sub">Tap, let it hear a song, sing along.</p>
+
+  <button id="toggle">Start<br>Listening</button>
+
+  <div id="status">Tap the button, then hold your phone/laptop mic toward the music.</div>
+  <div id="lastSong"></div>
+
+  <details id="settingsPanel">
+    <summary>⚙️ API keys (stored only on this device)</summary>
+    <div class="settings">
+      <div>
+        <label for="auddKey">AudD API key (required)</label>
+        <input id="auddKey" type="text" autocomplete="off" spellcheck="false" placeholder="from dashboard.audd.io">
+      </div>
+      <div>
+        <label for="geniusToken">Genius access token (optional)</label>
+        <input id="geniusToken" type="text" autocomplete="off" spellcheck="false" placeholder="from genius.com/api-clients">
+      </div>
+      <button id="saveKeys">Save keys on this device</button>
+      <div class="hint">Keys are saved in this browser's local storage only — never sent anywhere except AudD/Genius themselves, and never committed to this page's source.</div>
+    </div>
+  </details>
+</div>
+
+<script>
+const AUDD_URL = 'https://api.audd.io/';
+const GENIUS_SEARCH_API = 'https://api.genius.com/search';
+const CLIP_MS = 7000;
+
+const toggleBtn = document.getElementById('toggle');
+const statusEl = document.getElementById('status');
+const lastSongEl = document.getElementById('lastSong');
+const settingsPanel = document.getElementById('settingsPanel');
+const auddKeyInput = document.getElementById('auddKey');
+const geniusTokenInput = document.getElementById('geniusToken');
+const saveKeysBtn = document.getElementById('saveKeys');
+
+let running = false;
+let stream = null;
+let lastSongKey = null;
+
+function loadKeys() {
+  auddKeyInput.value = localStorage.getItem('lyricsnow_audd_key') || '';
+  geniusTokenInput.value = localStorage.getItem('lyricsnow_genius_token') || '';
+  if (!auddKeyInput.value) settingsPanel.open = true;
+}
+function saveKeys() {
+  localStorage.setItem('lyricsnow_audd_key', auddKeyInput.value.trim());
+  localStorage.setItem('lyricsnow_genius_token', geniusTokenInput.value.trim());
+  settingsPanel.open = false;
+  setStatus('Keys saved. Tap Start Listening.');
+}
+saveKeysBtn.addEventListener('click', saveKeys);
+loadKeys();
+
+function setStatus(text) { statusEl.textContent = text; }
+
+function pickMimeType() {
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac', 'audio/ogg;codecs=opus'];
+  for (const c of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) return c;
+  }
+  return '';
+}
+
+function recordClip(mediaStream, durationMs, mimeType) {
+  return new Promise((resolve, reject) => {
+    let recorder;
+    try {
+      recorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
+    } catch (err) { reject(err); return; }
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+    recorder.onerror = (e) => reject(e.error || new Error('recorder error'));
+    recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType || mimeType || 'audio/webm' }));
+    recorder.start();
+    setTimeout(() => { if (recorder.state !== 'inactive') recorder.stop(); }, durationMs);
+  });
+}
+
+async function recognize(blob, apiKey) {
+  const ext = blob.type.includes('mp4') ? 'mp4' : blob.type.includes('ogg') ? 'ogg' : 'webm';
+  const form = new FormData();
+  form.append('api_token', apiKey);
+  form.append('return', 'apple_music,spotify');
+  form.append('file', blob, `clip.${ext}`);
+  const res = await fetch(AUDD_URL, { method: 'POST', body: form });
+  const data = await res.json();
+  if (data.status !== 'success') {
+    throw new Error((data.error && data.error.error_message) || 'AudD request failed');
+  }
+  return data.result;
+}
+
+async function geniusLookup(title, artist, token) {
+  const q = encodeURIComponent(`${title} ${artist}`);
+  const res = await fetch(`${GENIUS_SEARCH_API}?q=${q}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) throw new Error('genius api error');
+  const data = await res.json();
+  const hits = (data.response && data.response.hits) || [];
+  return hits.length ? hits[0].result.url : null;
+}
+
+function geniusSearchUrl(title, artist) {
+  return `https://genius.com/search?q=${encodeURIComponent(title + ' ' + artist)}`;
+}
+
+async function listenLoop() {
+  const mimeType = pickMimeType();
+  while (running) {
+    setStatus('Listening...');
+    let blob;
+    try {
+      blob = await recordClip(stream, CLIP_MS, mimeType);
+    } catch (err) {
+      setStatus('Recording error: ' + err.message);
+      break;
+    }
+    if (!running) break;
+
+    setStatus('Identifying...');
+    const auddKey = localStorage.getItem('lyricsnow_audd_key') || '';
+    if (!auddKey) {
+      setStatus('Add your AudD API key below first.');
+      settingsPanel.open = true;
+      stopListening();
+      break;
+    }
+
+    let result = null;
+    try {
+      result = await recognize(blob, auddKey);
+    } catch (err) {
+      setStatus('Recognition error: ' + err.message + '\nRetrying...');
+      continue;
+    }
+
+    if (result && result.title) {
+      const songKey = result.title + '|' + result.artist;
+      if (songKey !== lastSongKey) {
+        lastSongKey = songKey;
+        lastSongEl.textContent = `${result.title} — ${result.artist}`;
+        setStatus('Found it! Opening lyrics...');
+
+        const geniusToken = localStorage.getItem('lyricsnow_genius_token') || '';
+        let url = null;
+        if (geniusToken) {
+          try { url = await geniusLookup(result.title, result.artist, geniusToken); }
+          catch (err) { /* fall through to search url */ }
+        }
+        if (!url) url = geniusSearchUrl(result.title, result.artist);
+
+        stopListening();
+        window.location.href = url;
+        return;
+      } else {
+        setStatus('Still: ' + result.title + ' — still listening...');
+      }
+    } else {
+      setStatus('No match yet, still listening...');
+    }
+  }
+}
+
+async function startListening() {
+  const auddKey = localStorage.getItem('lyricsnow_audd_key') || '';
+  if (!auddKey) {
+    setStatus('Add your AudD API key below first.');
+    settingsPanel.open = true;
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    setStatus('Microphone permission denied or unavailable: ' + err.message);
+    return;
+  }
+  running = true;
+  toggleBtn.innerHTML = 'Stop';
+  toggleBtn.classList.add('listening');
+  listenLoop();
+}
+
+function stopListening() {
+  running = false;
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  toggleBtn.innerHTML = 'Start<br>Listening';
+  toggleBtn.classList.remove('listening');
+}
+
+toggleBtn.addEventListener('click', () => {
+  if (running) stopListening(); else startListening();
+});
+</script>
+</body>
+</html>
