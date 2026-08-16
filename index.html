@@ -37,15 +37,13 @@
   <h1>Lyrics Now</h1>
   <p class="sub">Tap, let it hear a song, sing along.</p>
 
-  <button id="toggle">Start<br>Listening</button>
+  <button id="toggle" disabled>Loading…</button>
 
-  <div id="status">Tap the button, then hold your phone/laptop mic toward the music.</div>
+  <div id="status">Loading audio engine...</div>
   <div id="lastSong"></div>
 </div>
 
 <script type="module">
-import { processAudioFile } from './vendor/chromaprint-index.js';
-
 const PROXY_BASE = 'https://lyrics-now-proxy.utkarshgogna.workers.dev';
 const CLIP_MS = 22000;
 
@@ -56,6 +54,7 @@ const lastSongEl = document.getElementById('lastSong');
 let running = false;
 let stream = null;
 let lastSongKey = null;
+let processAudioFile = null;
 
 function setStatus(text) { statusEl.textContent = text; }
 
@@ -207,8 +206,21 @@ function stopListening() {
 }
 
 toggleBtn.addEventListener('click', () => {
+  if (!processAudioFile) return;
   if (running) stopListening(); else startListening();
 });
+
+(async () => {
+  try {
+    const mod = await import('./vendor/chromaprint-index.js');
+    processAudioFile = mod.processAudioFile;
+    toggleBtn.disabled = false;
+    toggleBtn.innerHTML = 'Start<br>Listening';
+    setStatus('Tap the button, then hold your phone/laptop mic toward the music.');
+  } catch (err) {
+    setStatus('Failed to load audio engine: ' + err.message + '\nTry reloading the page.');
+  }
+})();
 </script>
 </body>
 </html>
