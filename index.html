@@ -30,6 +30,16 @@
   }
   #status { margin-top: 22px; min-height: 44px; font-size: 0.98rem; color: #d6d6e0; white-space: pre-line; }
   #lastSong { margin-top: 6px; font-size: 0.88rem; color: #9a9aa8; }
+  .progress {
+    margin-top: 14px; height: 6px; border-radius: 3px; background: #1c1c26;
+    overflow: hidden; visibility: hidden;
+  }
+  .progress.active { visibility: visible; }
+  .progress-fill {
+    height: 100%; width: 0%; border-radius: 3px;
+    background: linear-gradient(90deg, #7c5cff, #ff5c8a);
+    transition: width 0.2s linear;
+  }
 </style>
 </head>
 <body>
@@ -41,15 +51,18 @@
 
   <div id="status">Loading audio engine...</div>
   <div id="lastSong"></div>
+  <div class="progress" id="progress"><div class="progress-fill" id="progressFill"></div></div>
 </div>
 
 <script type="module">
 const PROXY_BASE = 'https://lyrics-now-proxy.utkarshgogna.workers.dev';
-const CLIP_MS = 22000;
+const CLIP_MS = 10000;
 
 const toggleBtn = document.getElementById('toggle');
 const statusEl = document.getElementById('status');
 const lastSongEl = document.getElementById('lastSong');
+const progressEl = document.getElementById('progress');
+const progressFillEl = document.getElementById('progressFill');
 
 let running = false;
 let stream = null;
@@ -136,17 +149,32 @@ function geniusSearchUrl(title, artist) {
   return `https://genius.com/search?q=${encodeURIComponent(title + ' ' + artist)}`;
 }
 
+function startCountdown(durationMs) {
+  const start = Date.now();
+  progressEl.classList.add('active');
+  progressFillEl.style.width = '0%';
+  const id = setInterval(() => {
+    const elapsed = Date.now() - start;
+    const remaining = Math.max(0, Math.ceil((durationMs - elapsed) / 1000));
+    progressFillEl.style.width = Math.min(100, (elapsed / durationMs) * 100) + '%';
+    setStatus(`Keep the song playing — ${remaining}s`);
+  }, 200);
+  return () => { clearInterval(id); progressEl.classList.remove('active'); };
+}
+
 async function listenLoop() {
   const mimeType = pickMimeType();
   while (running) {
-    setStatus('Listening...');
+    const stopCountdown = startCountdown(CLIP_MS);
     let blob;
     try {
       blob = await recordClip(stream, CLIP_MS, mimeType);
     } catch (err) {
+      stopCountdown();
       setStatus('Recording error: ' + err.message);
       break;
     }
+    stopCountdown();
     if (!running) break;
 
     setStatus('Identifying...');
